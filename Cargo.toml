@@ -1,0 +1,22 @@
+[package]
+name = "visiosynth"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.81"
+bytemuck = { version = "1.15.0", features = ["derive"] }
+cpal = "0.15.3"
+device_query = "2.0.0"
+futures = "0.3.30"
+lazy_static = "1.4.0"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_derive = "1.0.197"
+serde_yaml = "0.9.33"
+tokio = { version = "1.36.0", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+wgpu = "0.19.3"
+winit = "0.29.15"

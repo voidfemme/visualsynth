@@ -1,0 +1,60 @@
+keybindings:
+  notes:
+    keys:
+      'Character("a")': 'C'
+      'Character("s")': 'D'
+      'Character("d")': 'E'
+      'Character("f")': 'F'
+      'Character("g")': 'G'
+      'Character("h")': 'A'
+      'Character("j")': 'B'
+      'Character("k")': 'C_HIGH'
+      'Character("w")': 'C_SHARP'
+      'Character("e")': 'D_SHARP'
+      'Character("t")': 'F_SHARP'
+      'Character("y")': 'G_SHARP'
+      'Character("u")': 'A_SHARP'
+
+  bass_notes:
+    keys:
+      'Character("z")': 'C2'
+      'Character("x")': 'D2'
+      'Character("c")': 'E2'
+      'Character("v")': 'F2'
+      'Character("b")': 'G2'
+      'Character("n")': 'A2'
+      'Character("m")': 'B2'
+      'Character(",")': 'C3'
+      'Character("1")': 'C2_SHARP'
+      'Character("3")': 'D2_SHARP'
+      'Character("5")': 'F2_SHARP'
+      'Character("6")': 'G2_SHARP'
+      'Character("8")': 'A2_SHARP'
+
+  key_change:
+    keys:
+      'F1': 'key_change_1'
+      'F2': 'key_change_2'
+      'F3': 'key_change_3'
+      'F4': 'key_change_4'
+      'F5': 'key_change_5'
+      'F6': 'key_change_6'
+      'F7': 'key_change_7'
+      'F8': 'key_change_8'
+      'F9': 'key_change_9'
+      'F10': 'key_change_0'
+
+  octave:
+    up: 'Named(ArrowUp)'
+    down: 'Named(ArrowDown)'
+
+  tremolo:
+    toggle: 'Named(Shift)'
+
+action_keys:
+  toggle_notes: {}
+  change_waveform:
+    'Character("9")': Sine
+    'Character("0")': Square
+    'Character("-")': Sawtooth
+    'Character("=")': Triangle
