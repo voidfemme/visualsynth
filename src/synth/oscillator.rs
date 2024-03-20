@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex};
 use serde_derive::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::synth::adsr_envelope::AmplitudeEnvelope;
-use crate::synth::tremolo::TremoloEffect;
-use crate::synth::waveform_generator::WaveformGenerator;
+use crate::synth::{AmplitudeEnvelope, TremoloEffect, WaveformGenerator};
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum OscillatorWaveform {

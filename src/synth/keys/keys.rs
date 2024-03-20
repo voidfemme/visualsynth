@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument};
+use tracing::debug;
 
-use crate::synth::oscillator::OscillatorWaveform;
+use crate::synth::OscillatorWaveform;
 
 pub const NOTE_SEQUENCE: [&str; 13] = [
     "C", "C_SHARP", "D", "D_SHARP", "E", "F", "F_SHARP", "G", "G_SHARP", "A", "A_SHARP", "B",

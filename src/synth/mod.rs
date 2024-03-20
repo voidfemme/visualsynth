@@ -8,6 +8,7 @@ pub mod tremolo;
 pub mod utils;
 pub mod waveform_generator;
 
+pub use adsr_envelope::AmplitudeEnvelope;
 pub use audiobuffer::AudioBuffer;
 pub use keys::{
     keys::Scale,
@@ -17,3 +18,4 @@ pub use keys::{
 pub use node::{AudioNode, WaveShaperNode};
 pub use oscillator::{Oscillator, OscillatorWaveform};
 pub use tremolo::TremoloEffect;
+pub use waveform_generator::WaveformGenerator;

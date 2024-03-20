@@ -1,4 +1,4 @@
-use crate::synth::oscillator::OscillatorWaveform;
+use crate::synth::OscillatorWaveform;
 use lazy_static::lazy_static;
 use std::f32::consts::PI;
 

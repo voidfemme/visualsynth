@@ -1,5 +1,5 @@
 use std::f32::consts::PI;
-use tracing::{debug, info};
+use tracing::debug;
 
 const TWO_PI: f32 = 2.0 * PI;
 const TREMOLO_TABLE_SIZE: usize = 1024;
@@ -33,8 +33,11 @@ impl TremoloEffect {
 
 #[derive(Debug)]
 pub struct Tremolo {
+    #[allow(dead_code)]
     rate: f32,
+    #[allow(dead_code)]
     depth: f32,
+    #[allow(dead_code)]
     phase: f32,
     tremolo_table: [f32; TREMOLO_TABLE_SIZE],
     table_index: usize,

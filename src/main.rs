@@ -1,6 +1,6 @@
 // visiosynth/src/main.rs
 
-use anyhow::{Context, Ok, Result};
+use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures;
 use serde_yaml;
@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{debug, error, info, Level};
+use tracing::{debug, error, warn, info, Level};
 use tracing_subscriber;
 use visiosynth::{
     graphics::{AudioData, State},
@@ -22,6 +22,10 @@ use winit::{
     event_loop::EventLoop,
     window::WindowBuilder,
 };
+
+struct DownsampledAudioData {
+    samples: [[f32; 16]; 256],
+}
 
 // Import necessary modules and dependencies
 #[tokio::main]
@@ -60,6 +64,9 @@ async fn main() -> Result<(), anyhow::Error> {
         root_note: "C".to_string(),
         intervals: vec![2, 2, 1, 2, 2, 2, 1],
     }));
+    let downsampled_audio_data = Arc::new(Mutex::new(DownsampledAudioData {
+        samples: [[0.0; 16]; 256],
+    }));
 
     // Create the window and event loop
     let event_loop = EventLoop::new()?;
@@ -83,6 +90,7 @@ async fn main() -> Result<(), anyhow::Error> {
         let global_time = global_time.clone();
         let tremolo_effect = tremolo_effect.clone();
         let scale = scale.clone();
+        let downsampled_audio_data = downsampled_audio_data.clone();
 
         move || match config.sample_format() {
             cpal::SampleFormat::F32 => run_audio_loop::<f32>(
@@ -94,6 +102,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 global_time,
                 tremolo_effect,
                 scale,
+                downsampled_audio_data,
             ),
             cpal::SampleFormat::I16 => run_audio_loop::<i16>(
                 &device,
@@ -104,6 +113,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 global_time,
                 tremolo_effect,
                 scale,
+                downsampled_audio_data,
             ),
             cpal::SampleFormat::U16 => run_audio_loop::<u16>(
                 &device,
@@ -114,6 +124,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 global_time,
                 tremolo_effect,
                 scale,
+                downsampled_audio_data,
             ),
             _ => panic!("Unsupported sample format"),
         }
@@ -124,7 +135,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // - Handle user events (e.g., redraw)
     // - Update audio data based on the current time and sample rate
     // - Render the graphics and audio
-    info!("Starting event loop");
+    debug!("Starting event loop");
     run_event_loop(
         event_loop,
         &window,
@@ -134,6 +145,7 @@ async fn main() -> Result<(), anyhow::Error> {
         octave_shift.clone(),
         tremolo_effect.clone(),
         scale.clone(),
+        downsampled_audio_data.clone(),
     )
     .await?;
 
@@ -153,16 +165,21 @@ fn run_audio_loop<T>(
     global_time: Arc<Mutex<f32>>,
     tremolo_effect: Arc<Mutex<TremoloEffect>>,
     scale: Arc<Mutex<Scale>>,
+    downsampled_audio_data: Arc<Mutex<DownsampledAudioData>>,
 ) -> Result<(), anyhow::Error>
 where
     T: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>,
 {
-    info!(
+    debug!(
         "Initial waveform type: {:?}",
         *waveform_type.lock().unwrap()
     );
 
     let sample_rate: f32 = config.sample_rate.0 as f32;
+    let downsample_factor = (sample_rate / 60.0) as usize;
+
+    let mut accumulated_samples = Vec::new();
+
     let channels = config.channels as usize;
 
     // Initialize oscillator and modulator
@@ -182,50 +199,84 @@ where
                 num_channels: channels,
             };
 
-            let mut note_state = note_state.lock().unwrap();
-            let octave_shift = octave_shift.lock().unwrap();
+            // Accumulate audio samples
+            accumulated_samples.extend(output_buffer.data.iter().cloned());
 
-            let playing_notes: Vec<(String, bool)> =
-                note_state.playing_notes.clone().into_iter().collect();
+            // If enough samples have been accumulated, send them to the graphics thread
+            if accumulated_samples.len() >= downsample_factor {
+                let mut downsampled_samples = Vec::new();
 
-            let mut global_time = global_time_clone.lock().unwrap();
-            let current_time = *global_time;
-            *global_time += data.len() as f32 / sample_rate;
+                // Calculate the average of the accumulated samples
+                for chunk in accumulated_samples.chunks(downsample_factor) {
+                    let sum: f32 = chunk.iter().sum();
+                    let average = sum / chunk.len() as f32;
+                    downsampled_samples.push(average);
+                }
 
-            note_state.oscillators.retain(|osc| {
-                playing_notes
-                    .iter()
-                    .any(|(note, is_playing)| note == &osc.note && *is_playing)
-            });
-
-            {
-                for (note, is_playing) in playing_notes.iter() {
-                    if *is_playing && !note_state.oscillators.iter().any(|osc| osc.note == *note) {
-                        if let Some(frequency) = scale.lock().unwrap().calculate_frequency(note) {
-                            let adjusted_frequency = frequency * 2.0f32.powf(*octave_shift as f32);
-                            let mut oscillator = Oscillator::builder()
-                                .frequency(adjusted_frequency)
-                                .waveform(*waveform_type.lock().unwrap())
-                                .attack_time(0.5)
-                                .release_time(0.5)
-                                .tremolo_effect(tremolo_effect.clone())
-                                .build();
-                            oscillator.start_note(current_time);
-                            note_state.add_oscillator(oscillator);
+                // Update the shared DownsampledAudioData structure
+                if let Ok(mut downsampled_audio_data) = downsampled_audio_data.lock() {
+                    let num_frames = downsampled_samples.len().min(256);
+                    downsampled_audio_data.samples = [[0.0; 16]; 256];
+                    for (i, chunk) in downsampled_samples.chunks(16).enumerate().take(num_frames) {
+                        for (j, &sample) in chunk.iter().enumerate() {
+                            downsampled_audio_data.samples[i][j] = sample;
                         }
                     }
                 }
+                // Clear the accumulated samples
+                accumulated_samples.clear();
+            }
 
-                for oscillator in note_state.oscillators.iter_mut() {
-                    let current_waveform = *waveform_type.lock().unwrap();
-                    if current_waveform != oscillator.get_waveform() {
-                        oscillator.set_waveform(current_waveform);
-                    }
+            if let Ok(mut note_state) = note_state.lock() {
+                if let Ok(octave_shift) = octave_shift.lock() {
+                    let playing_notes: Vec<(String, bool)> =
+                        note_state.playing_notes.clone().into_iter().collect();
 
-                    for (i, sample) in output_buffer.data.iter_mut().enumerate() {
-                        let current_time = i as f32 / sample_rate;
-                        *sample += oscillator.generate_wave(current_time) * 0.01;
-                        // Adjust the volume here
+                    if let Ok(mut global_time) = global_time_clone.lock() {
+                        let current_time = *global_time;
+                        *global_time += data.len() as f32 / sample_rate;
+
+                        note_state.oscillators.retain(|osc| {
+                            playing_notes
+                                .iter()
+                                .any(|(note, is_playing)| note == &osc.note && *is_playing)
+                        });
+
+                        for (note, is_playing) in playing_notes.iter() {
+                            if *is_playing
+                                && !note_state.oscillators.iter().any(|osc| osc.note == *note)
+                            {
+                                if let Ok(scale) = scale.lock() {
+                                    if let Some(frequency) = scale.calculate_frequency(note) {
+                                        let adjusted_frequency =
+                                            frequency * 2.0f32.powf(*octave_shift as f32);
+                                        let mut oscillator = Oscillator::builder()
+                                            .frequency(adjusted_frequency)
+                                            .waveform(*waveform_type.lock().unwrap())
+                                            .attack_time(0.5)
+                                            .release_time(0.5)
+                                            .tremolo_effect(Arc::clone(&tremolo_effect))
+                                            .build();
+                                        oscillator.start_note(current_time);
+                                        note_state.add_oscillator(oscillator);
+                                    }
+                                }
+                            }
+                        }
+
+                        for oscillator in note_state.oscillators.iter_mut() {
+                            if let Ok(current_waveform) = waveform_type.lock() {
+                                if *current_waveform != oscillator.get_waveform() {
+                                    oscillator.set_waveform(*current_waveform);
+                                }
+                            }
+
+                            for (i, sample) in output_buffer.data.iter_mut().enumerate() {
+                                let current_time = i as f32 / sample_rate;
+                                *sample += oscillator.generate_wave(current_time) * 0.01;
+                                // Adjust the volume here
+                            }
+                        }
                     }
                 }
             }
@@ -255,6 +306,7 @@ async fn run_event_loop(
     octave_shift: Arc<Mutex<i32>>,
     tremolo_effect: Arc<Mutex<TremoloEffect>>,
     scale: Arc<Mutex<Scale>>,
+    downsampled_audio_data: Arc<Mutex<DownsampledAudioData>>,
 ) -> Result<()> {
     info!("run_event_loop function called");
     let mut state = State::new(&window)
@@ -264,29 +316,26 @@ async fn run_event_loop(
     let mut audio_data = AudioData {
         samples: [[0.0; 16]; 256],
     };
-    let mut current_time = 0.0;
-    let sample_rate = 60.0;
-    let frequency = 1.0;
 
     let _ = event_loop.run(move |event, event_loop_window_target| match event {
         Event::WindowEvent {
             event: WindowEvent::CloseRequested,
             ..
         } => {
-            info!("The close button was pressed; stopping");
+            debug!("The close button was pressed; stopping");
             event_loop_window_target.exit();
             std::process::exit(0);
         }
 
         Event::UserEvent(_) => {
-            info!("Received a UserEvent");
+            debug!("Received a UserEvent");
             window.request_redraw();
         }
 
         Event::WindowEvent {
             event:
                 WindowEvent::KeyboardInput {
-                    device_id,
+                    device_id: _,
                     event:
                         KeyEvent {
                             state, logical_key, ..
@@ -296,20 +345,20 @@ async fn run_event_loop(
                 },
             ..
         } => {
-            info!("Received a KeyboardInput");
+            debug!("Received a KeyboardInput");
             if is_synthetic {
                 println!("Received a synthetic keyboard event.");
             } else {
                 let key_str = format!("{:?}", logical_key);
                 let mut note_state = note_state.lock().unwrap();
                 let mut octave_shift = octave_shift.lock().unwrap();
-                let mut waveform_type = waveform_type.clone();
-                let mut tremolo_effect = tremolo_effect.clone();
-                let mut scale = scale.clone();
+                let waveform_type = waveform_type.clone();
+                let tremolo_effect = tremolo_effect.clone();
+                let scale = scale.clone();
 
-                info!("Current state: {:#?}", state);
+                debug!("Current state: {:#?}", state);
                 if state == ElementState::Pressed {
-                    info!("Key {} pressed", key_str);
+                    debug!("Key {} pressed", key_str);
                     if let Some(event) = keycode_to_action(&key_str, &*keys_config) {
                         match event {
                             NoteEvent::ChangeOctave(direction) => {
@@ -326,7 +375,7 @@ async fn run_event_loop(
                         println!("Key pressed: {:?}", key_str);
                     }
                 } else if state == ElementState::Released {
-                    info!("Key {} released", key_str);
+                    debug!("Key {} released", key_str);
                     if let Some(event) = keycode_to_action(&key_str, &*keys_config) {
                         match event {
                             NoteEvent::On(note) => note_state.note_off(note),
@@ -352,22 +401,19 @@ async fn run_event_loop(
             event: WindowEvent::RedrawRequested,
             ..
         } => {
-            // Update the current time based on the elapsed time
-            current_time += 1.0 / sample_rate;
-
-            for i in 0..audio_data.samples.len() {
-                for j in 0..audio_data.samples[i].len() {
-                    let t = (i * 16 + j) as f32 / sample_rate;
-                    let sample =
-                        (2.0 * std::f32::consts::PI * frequency * (current_time + t)).sin();
-                    audio_data.samples[i][j] = sample;
-                }
+            // Access the shared DownsampledAudioData structure to retrieve the downsampled audio samples
+            if let Ok(downsampled_audio_data) = downsampled_audio_data.lock() {
+                // Update the audio_data with the downsampled samples
+                audio_data.samples = downsampled_audio_data.samples;
             }
+
             if let Err(e) = futures::executor::block_on(state.render(&window, &audio_data)) {
                 error!("Render error: {}", e);
             }
+
             window.request_redraw();
         }
+
         _ => debug!("Other event: {:?}", event),
     });
     Ok(())
@@ -378,53 +424,53 @@ async fn run_event_loop(
 fn keycode_to_action(key: &str, config: &Config) -> Option<NoteEvent> {
     // Convert the key string to lowercase for case-insensitive comparison
     let key_str = key.to_string();
-    info!("Keycode to action called with key {}\n", key_str);
+    debug!("Keycode to action called with key {}\n", key_str);
 
     // Check if the key matches any of the waveform change keys
     if let Some(waveform) = config.action_keys.change_waveform.get(&key_str) {
-        info!("Change waveform: {:?}, Key: {}\n", waveform, key_str);
+        debug!("Change waveform: {:?}, Key: {}\n", waveform, key_str);
         return Some(NoteEvent::ChangeWaveform(waveform.clone()));
     }
 
     // Check if the key matches the octave up key
     if key_str == config.keybindings.octave.up {
-        info!("Octave up key pressed: {}\n", key_str);
+        debug!("Octave up key pressed: {}\n", key_str);
         return Some(NoteEvent::ChangeOctave("up".to_string()));
     }
 
     // Check if the key matches the octave down key
     if key_str == config.keybindings.octave.down {
-        info!("Octave down key pressed: {}\n", key_str);
+        debug!("Octave down key pressed: {}\n", key_str);
         return Some(NoteEvent::ChangeOctave("down".to_string()));
     }
 
     // Check if the key matches the tremolo toggle key
     if key_str == config.keybindings.tremolo.toggle {
-        info!("Tremolo Toggled: {}\n", key_str);
+        debug!("Tremolo Toggled: {}\n", key_str);
         return Some(NoteEvent::ToggleTremolo);
     }
 
     // Check if the key matches any of the note keys
     if let Some(note) = config.keybindings.notes.keys.get(&key_str) {
-        info!("Note: {} key: {}\n", note, key_str);
+        debug!("Note: {} key: {}\n", note, key_str);
         return Some(NoteEvent::On(note.clone()));
     }
 
     // Check if the key matches any of the bass note keys
     if let Some(note) = config.keybindings.bass_notes.keys.get(&key_str) {
-        info!("Bass note: {} key: {}\n", note, key_str);
+        debug!("Bass note: {} key: {}\n", note, key_str);
         return Some(NoteEvent::On(note.clone()));
     }
 
     // Check if the key matches any of the key change keys
     if let Some(note) = config.keybindings.key_change.keys.get(&key_str) {
-        info!("Key change: {} key {}\n", note, key_str);
+        debug!("Key change: {} key {}\n", note, key_str);
         // Implement the logic for handling key change events
         // For example, you can update the scale or root note based on the key change
         // Return the appropriate NoteEvent or None
     }
 
     // If no matching key is found, return None
-    info!("NO MATCHING KEY FOUND, RETURNING NONE. KEY: {}\n", key_str);
+    warn!("NO MATCHING KEY FOUND, RETURNING NONE. KEY: {}\n", key_str);
     None
 }

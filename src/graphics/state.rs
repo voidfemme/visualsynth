@@ -37,10 +37,12 @@ pub struct State<'a> {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    #[allow(dead_code)]
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     num_vertices: u32,
+    #[allow(dead_code)]
     audio_data: AudioData,
     audio_bind_group: wgpu::BindGroup,
     audio_buffer: wgpu::Buffer,
