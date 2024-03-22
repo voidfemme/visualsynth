@@ -1,7 +1,13 @@
-use crate::graphics::vertex::{Vertex, VERTICES};
+use crate::graphics::{generate_waveform_vertices, Vertex};
 use anyhow::{Context, Ok, Result};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniform {
+    time: f32,
+}
 
 pub struct AudioData {
     pub samples: [[f32; 16]; 256],
@@ -32,6 +38,7 @@ impl AudioData {
         }
     }
 }
+
 pub struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
@@ -46,6 +53,8 @@ pub struct State<'a> {
     audio_data: AudioData,
     audio_bind_group: wgpu::BindGroup,
     audio_buffer: wgpu::Buffer,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
 }
 
 impl<'a> State<'a> {
@@ -90,9 +99,6 @@ impl<'a> State<'a> {
             .context("Failed to request device")?;
 
         let surface_caps = surface.get_capabilities(&adapter);
-        // Shader code in this tutorial assumes an sRGB surface texture. Using a different one will
-        // result in all the colors coming out darker. If you want to support non-sRGB surfaces,
-        // you'll need to account for that when drawing to the frame.
         let surface_format = surface_caps
             .formats
             .iter()
@@ -149,18 +155,51 @@ impl<'a> State<'a> {
             label: Some("audio_bind_group"),
         });
 
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("uniform_bind_group_layout"),
+            });
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[Uniform { time: 0.0 }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniform_bind_group"),
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&audio_bind_group_layout],
+                bind_group_layouts: &[&audio_bind_group_layout, &uniform_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
+        let num_vertices = 100;
+        let vertices = generate_waveform_vertices(num_vertices);
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
+            contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -182,7 +221,7 @@ impl<'a> State<'a> {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu::PrimitiveTopology::LineStrip,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
@@ -199,8 +238,6 @@ impl<'a> State<'a> {
             multiview: None,
         });
 
-        let num_vertices = VERTICES.len() as u32;
-
         Ok(State {
             surface,
             device,
@@ -209,10 +246,12 @@ impl<'a> State<'a> {
             size,
             render_pipeline,
             vertex_buffer,
-            num_vertices,
+            num_vertices: num_vertices as u32,
             audio_data,
             audio_buffer,
             audio_bind_group,
+            uniform_buffer,
+            uniform_bind_group,
         })
     }
 
@@ -258,6 +297,21 @@ impl<'a> State<'a> {
                 label: Some("Render Encoder"),
             });
 
+        // Write the updated audio data to the audio buffer
+        self.queue.write_buffer(
+            &self.audio_buffer,
+            0,
+            bytemuck::cast_slice(&audio_data.samples),
+        );
+
+        // Get the current time and write it to the uniform buffer
+        let time = std::time::Instant::now().elapsed().as_secs_f32();
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[Uniform { time }]),
+        );
+
         // Begin the render pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -282,15 +336,11 @@ impl<'a> State<'a> {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.audio_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..self.num_vertices, 0..1)
+            render_pass.draw(0..self.num_vertices, 0..1);
         }
 
-        self.queue.write_buffer(
-            &self.audio_buffer,
-            0,
-            bytemuck::cast_slice(&audio_data.samples),
-        );
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 

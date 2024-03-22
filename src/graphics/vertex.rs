@@ -1,24 +1,8 @@
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    position: [f32; 3],
-    color: [f32; 3],
+    position: [f32; 2],
 }
-
-pub const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [0.0, 0.2, 0.0],
-        color: [1.0, 0.0, 0.0],
-    },
-    Vertex {
-        position: [-0.2, -0.2, 0.0],
-        color: [0.0, 1.0, 0.0],
-    },
-    Vertex {
-        position: [0.2, -0.2, 0.0],
-        color: [0.0, 0.0, 1.0],
-    },
-];
 
 impl Vertex {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
@@ -29,14 +13,24 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x2,
                 }
-            ]
+            ],
         }
     }
+}
+
+// Function to generate vertices for the waveform
+pub fn generate_waveform_vertices(num_vertices: usize) -> Vec<Vertex> {
+    let mut vertices = Vec::with_capacity(num_vertices);
+    let x_step = 2.0 / (num_vertices as f32 - 1.0); // Step to cover [-1, 1] range
+    
+    for i in 0..num_vertices {
+        let x = -1.0 + (i as f32 * x_step);
+        // Placeholder Y value, you might want to adjust it based on your audio data
+        let y = 0.0; 
+        vertices.push(Vertex { position: [x, y] });
+    }
+
+    vertices
 }

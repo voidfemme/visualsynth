@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::synth::{NoteEvent, Oscillator, OscillatorWaveform, Scale, TremoloEffect};
 
@@ -29,7 +29,7 @@ impl NoteState {
     pub fn handle_event(
         &mut self,
         event: NoteEvent,
-        waveform_type: &Arc<Mutex<OscillatorWaveform>>,
+        waveform_type: &Arc<RwLock<OscillatorWaveform>>,
         tremolo_effect: &Arc<Mutex<TremoloEffect>>,
         scale: &Arc<Mutex<Scale>>,
     ) {
@@ -38,8 +38,9 @@ impl NoteState {
             NoteEvent::On(note) => self.note_on(note),
             NoteEvent::Off(note) => self.note_off(note),
             NoteEvent::ChangeWaveform(waveform) => {
-                let mut waveform_type = waveform_type.lock().unwrap();
-                *waveform_type = waveform;
+                if let Ok(mut waveform_type) = waveform_type.write() {
+                    *waveform_type = waveform;
+                }
             }
             NoteEvent::ChangeOctave(direction) => self.change_octave(direction),
             NoteEvent::ToggleTremolo => {

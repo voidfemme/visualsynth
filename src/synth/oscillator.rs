@@ -53,25 +53,33 @@ impl Oscillator {
         OscillatorBuilder::default()
     }
 
-    pub fn generate_wave(&mut self, current_time: f32) -> f32 {
-        let sample = self.waveform_generator.get_sample();
+    pub fn generate_wave(&mut self, current_time: f32, num_samples: usize) -> Vec<f32> {
+        let mut output = Vec::with_capacity(num_samples);
+        let start_time = self.start_time.unwrap_or(current_time);
 
-        let envelope_value = if let Some(start_time) = self.start_time {
-            self.envelope.amplitude_at_time(current_time - start_time)
-        } else {
-            1.0
+        let tremolo_enabled = {
+            let tremolo_effect = self.tremolo_effect.lock().unwrap();
+            tremolo_effect.enabled
         };
 
-        let mut output = sample * envelope_value;
+        for i in 0..num_samples {
+            let sample_time = current_time + i as f32 / self.waveform_generator.sample_rate;
+            let sample = self.waveform_generator.get_sample();
 
-        let mut tremolo_effect = self.tremolo_effect.lock().unwrap();
-        if tremolo_effect.enabled {
-            output = tremolo_effect.process(output, self.waveform_generator.sample_rate);
+            let envelope_value = self.envelope.amplitude_at_time(sample_time - start_time);
+            let mut output_sample = sample * envelope_value;
+
+            if tremolo_enabled {
+                let mut tremolo_effect = self.tremolo_effect.lock().unwrap();
+                output_sample =
+                    tremolo_effect.process(output_sample, self.waveform_generator.sample_rate);
+            }
+
+            output.push(output_sample);
         }
 
         output
     }
-
     pub fn start_note(&mut self, start_time: f32) {
         self.start_time = Some(start_time);
     }

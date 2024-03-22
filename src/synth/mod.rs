@@ -19,3 +19,4 @@ pub use node::{AudioNode, WaveShaperNode};
 pub use oscillator::{Oscillator, OscillatorWaveform};
 pub use tremolo::TremoloEffect;
 pub use waveform_generator::WaveformGenerator;
+pub use audiobuffer::DownsampledAudioData;

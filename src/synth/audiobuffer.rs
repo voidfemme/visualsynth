@@ -24,3 +24,7 @@ impl AudioBuffer {
         &mut self.data[start_index..start_index + channel_len]
     }
 }
+
+pub struct DownsampledAudioData {
+    pub samples: [[f32; 16]; 256],
+}
