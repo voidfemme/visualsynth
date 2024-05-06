@@ -1,9 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::Ordering, Arc};
 
 use serde_derive::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::synth::{AmplitudeEnvelope, TremoloEffect, WaveformGenerator};
+
+use super::tremolo::Tremolo;
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum OscillatorWaveform {
@@ -18,7 +20,7 @@ pub enum OscillatorWaveform {
 pub struct Oscillator {
     waveform_generator: WaveformGenerator,
     envelope: AmplitudeEnvelope,
-    tremolo_effect: Arc<Mutex<TremoloEffect>>,
+    tremolo_effect: Arc<TremoloEffect>,
     pub note: String,
     start_time: Option<f32>,
 }
@@ -33,7 +35,7 @@ impl Oscillator {
         decay_time: f32,
         sustain_level: f32,
         release_time: f32,
-        tremolo_effect: Arc<Mutex<TremoloEffect>>,
+        tremolo_effect: Arc<TremoloEffect>,
     ) -> Self {
         Oscillator {
             waveform_generator: WaveformGenerator::new(waveform, frequency, sample_rate),
@@ -57,10 +59,7 @@ impl Oscillator {
         let mut output = Vec::with_capacity(num_samples);
         let start_time = self.start_time.unwrap_or(current_time);
 
-        let tremolo_enabled = {
-            let tremolo_effect = self.tremolo_effect.lock().unwrap();
-            tremolo_effect.enabled
-        };
+        let tremolo_enabled = self.tremolo_effect.enabled.load(Ordering::Relaxed);
 
         for i in 0..num_samples {
             let sample_time = current_time + i as f32 / self.waveform_generator.sample_rate;
@@ -70,9 +69,10 @@ impl Oscillator {
             let mut output_sample = sample * envelope_value;
 
             if tremolo_enabled {
-                let mut tremolo_effect = self.tremolo_effect.lock().unwrap();
-                output_sample =
-                    tremolo_effect.process(output_sample, self.waveform_generator.sample_rate);
+                let rate = self.tremolo_effect.get_rate();
+                let depth = self.tremolo_effect.get_depth();
+                let mut tremolo = Tremolo::new(rate, depth, self.waveform_generator.sample_rate);
+                output_sample = tremolo.process(output_sample, self.waveform_generator.sample_rate);
             }
 
             output.push(output_sample);
@@ -80,6 +80,7 @@ impl Oscillator {
 
         output
     }
+
     pub fn start_note(&mut self, start_time: f32) {
         self.start_time = Some(start_time);
     }
@@ -128,7 +129,7 @@ pub struct OscillatorBuilder {
     decay_time: f32,
     sustain_level: f32,
     release_time: f32,
-    tremolo_effect: Option<Arc<Mutex<TremoloEffect>>>,
+    tremolo_effect: Option<Arc<TremoloEffect>>,
 }
 
 impl Default for OscillatorBuilder {
@@ -150,13 +151,13 @@ impl Default for OscillatorBuilder {
 impl OscillatorBuilder {
     pub fn build(self) -> Oscillator {
         let tremolo_effect = self.tremolo_effect.unwrap_or_else(|| {
-            Arc::new(Mutex::new(
+            Arc::new(
                 TremoloEffect::builder()
                     .rate(5.0)
                     .depth(0.5)
                     .enabled(false)
                     .build(self.sample_rate),
-            ))
+            )
         });
 
         Oscillator::new(
@@ -172,7 +173,7 @@ impl OscillatorBuilder {
         )
     }
 
-    pub fn tremolo_effect(mut self, effect: Arc<Mutex<TremoloEffect>>) -> Self {
+    pub fn tremolo_effect(mut self, effect: Arc<TremoloEffect>) -> Self {
         self.tremolo_effect = Some(effect);
         self
     }

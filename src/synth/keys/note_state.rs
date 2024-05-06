@@ -30,7 +30,7 @@ impl NoteState {
         &mut self,
         event: NoteEvent,
         waveform_type: &Arc<RwLock<OscillatorWaveform>>,
-        tremolo_effect: &Arc<Mutex<TremoloEffect>>,
+        tremolo_effect: &Arc<TremoloEffect>,
         scale: &Arc<Mutex<Scale>>,
     ) {
         println!("Event: {:?}", event);
@@ -44,7 +44,6 @@ impl NoteState {
             }
             NoteEvent::ChangeOctave(direction) => self.change_octave(direction),
             NoteEvent::ToggleTremolo => {
-                let mut tremolo_effect = tremolo_effect.lock().unwrap();
                 tremolo_effect.toggle();
             }
             NoteEvent::ChangeKey(new_key) => {

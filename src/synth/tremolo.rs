@@ -1,13 +1,18 @@
 use std::f32::consts::PI;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 const TWO_PI: f32 = 2.0 * PI;
 const TREMOLO_TABLE_SIZE: usize = 1024;
+const SCALE_FACTOR: u32 = 1000;
 
 #[derive(Debug)]
 pub struct TremoloEffect {
-    tremolo: Tremolo,
-    pub enabled: bool,
+    tremolo: Arc<Mutex<Tremolo>>,
+    pub enabled: AtomicBool,
+    rate: AtomicU32,
+    depth: AtomicU32,
 }
 
 impl TremoloEffect {
@@ -18,31 +23,49 @@ impl TremoloEffect {
 
     pub fn process(&mut self, sample: f32, sample_rate: f32) -> f32 {
         debug!("Processing sample: {}", sample);
-        if self.enabled {
-            self.tremolo.process(sample, sample_rate)
+        if self.enabled.load(Ordering::Relaxed) {
+            let mut tremolo = self.tremolo.lock().unwrap();
+            tremolo.process(sample, sample_rate)
         } else {
             sample
         }
     }
 
-    pub fn toggle(&mut self) {
-        self.enabled = !self.enabled;
-        debug!("Tremolo effect enabled: {}", self.enabled);
+    pub fn toggle(&self) {
+        let enabled = self.enabled.fetch_xor(true, Ordering::Relaxed);
+        if enabled {
+            let mut tremolo = self.tremolo.lock().unwrap();
+            tremolo.reset();
+        }
+    }
+
+    pub fn set_rate(&self, rate: f32) {
+        self.rate
+            .store((rate * SCALE_FACTOR as f32) as u32, Ordering::Relaxed);
+    }
+
+    pub fn set_depth(&self, depth: f32) {
+        self.rate
+            .store((depth * SCALE_FACTOR as f32) as u32, Ordering::Relaxed);
+    }
+
+    pub fn get_rate(&self) -> f32 {
+        self.rate.load(Ordering::Relaxed) as f32 / SCALE_FACTOR as f32
+    }
+
+    pub fn get_depth(&self) -> f32 {
+        self.depth.load(Ordering::Relaxed) as f32 / SCALE_FACTOR as f32
     }
 }
 
 #[derive(Debug)]
 pub struct Tremolo {
-    #[allow(dead_code)]
     rate: f32,
-    #[allow(dead_code)]
     depth: f32,
-    #[allow(dead_code)]
-    phase: f32,
     tremolo_table: [f32; TREMOLO_TABLE_SIZE],
-    table_index: usize,
+    table_index: AtomicUsize,
     samples_per_tremolo_cycle: usize,
-    sample_counter: usize,
+    sample_counter: AtomicUsize,
 }
 
 impl Tremolo {
@@ -57,24 +80,30 @@ impl Tremolo {
         Tremolo {
             rate,
             depth,
-            phase: 0.0,
             tremolo_table,
-            table_index: 0,
+            table_index: AtomicUsize::new(0),
             samples_per_tremolo_cycle,
-            sample_counter: 0,
+            sample_counter: AtomicUsize::new(0),
         }
     }
 
-    pub fn process(&mut self, sample: f32, _sample_rate: f32) -> f32 {
+    pub fn process(&self, sample: f32, _sample_rate: f32) -> f32 {
         debug!("Processing sample: {}", sample);
-        let amplitude = self.tremolo_table[self.table_index];
-        self.sample_counter += 1;
-        if self.sample_counter >= self.samples_per_tremolo_cycle {
-            self.sample_counter = 0;
-            self.table_index = (self.table_index + 1) % TREMOLO_TABLE_SIZE;
-            debug!("Updated table index: {}", self.table_index);
+        let table_index = self.table_index.load(Ordering::Relaxed);
+        let amplitude = self.tremolo_table[table_index];
+
+        let sample_counter = self.sample_counter.fetch_add(1, Ordering::Relaxed);
+        if sample_counter + 1 >= self.samples_per_tremolo_cycle {
+            self.sample_counter.store(0, Ordering::Relaxed);
+            self.table_index
+                .store((table_index + 1) % TREMOLO_TABLE_SIZE, Ordering::Relaxed);
         }
         sample * amplitude
+    }
+
+    pub fn reset(&self) {
+        self.table_index.store(0, Ordering::Relaxed);
+        self.sample_counter.store(0, Ordering::Relaxed);
     }
 }
 
@@ -117,8 +146,10 @@ impl TremoloEffectBuilder {
     pub fn build(self, sample_rate: f32) -> TremoloEffect {
         debug!("Building TremoloEffect with sample rate: {}", sample_rate);
         TremoloEffect {
-            tremolo: Tremolo::new(self.rate, self.depth, sample_rate),
-            enabled: self.enabled,
+            tremolo: Arc::new(Mutex::new(Tremolo::new(self.rate, self.depth, sample_rate))),
+            enabled: AtomicBool::new(self.enabled),
+            rate: AtomicU32::new((self.rate * SCALE_FACTOR as f32) as u32),
+            depth: AtomicU32::new((self.depth * SCALE_FACTOR as f32) as u32),
         }
     }
 }

@@ -51,17 +51,18 @@ async fn main() -> Result<(), anyhow::Error> {
     let note_state = Arc::new(Mutex::new(NoteState::new()));
 
     let keys_config = Arc::new(keys_config);
-    let tremolo_effect = Arc::new(Mutex::new(
+    let tremolo_effect = Arc::new(
         TremoloEffect::builder()
             .rate(5.0)
             .depth(0.5)
             .enabled(false)
             .build(config.sample_rate().0 as f32),
-    ));
+    );
     let scale = Arc::new(Mutex::new(Scale {
         root_note: "C".to_string(),
         intervals: vec![2, 2, 1, 2, 2, 2, 1],
     }));
+
     let downsampled_audio_data = Arc::new(Mutex::new(DownsampledAudioData {
         samples: [[0.0; 16]; 256],
     }));
@@ -161,20 +162,28 @@ fn run_audio_loop<T>(
     note_state: Arc<Mutex<NoteState>>,
     octave_shift: Arc<RwLock<i32>>,
     global_time: Arc<AtomicU64>,
-    tremolo_effect: Arc<Mutex<TremoloEffect>>,
+    tremolo_effect: Arc<TremoloEffect>,
     scale: Arc<Mutex<Scale>>,
     downsampled_audio_data: Arc<Mutex<DownsampledAudioData>>,
 ) -> Result<(), anyhow::Error>
 where
     T: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>,
 {
+    // We calculate the sample rate and downsample factor to determine how many samples to
+    // accummulate before downsampling the audio data. This helps reduce the computational load
+    // while maintaining a smooth audio output.
     let sample_rate: f32 = config.sample_rate.0 as f32;
     let downsample_factor = (sample_rate / 60.0) as usize;
     let mut accumulated_samples = Vec::new();
     let channels = config.channels as usize;
+
+    // We create a wave shaper node with a sine transfer function to apply distortion to the audio
+    // output. This adds character and richness to the sound.
     let mut wave_shaper_node = WaveShaperNode {
         transfer_fn: |x| x.sin(),
     };
+
+    // We define an error function to handle any errors that may occur during audio streaming.
     let err_fn = |err| eprintln!("An error occurred on the audio stream: {}", err);
 
     let stream = device.build_output_stream(
@@ -193,18 +202,31 @@ where
                     let current_time = global_time.load(Ordering::Relaxed) as f32 / sample_rate;
                     global_time.fetch_add(data.len() as u64, Ordering::Relaxed);
 
+                    // We retain only the oscillators that correspond to currently playing notes.
+                    // This ensures that oscillators are stopped and removed when their
+                    // corresponding notes are released, and preventing unnecessary computation and
+                    // memory usage.
                     note_state.oscillators.retain(|osc| {
                         playing_notes
                             .iter()
                             .any(|(note, is_playing)| note == &osc.note && *is_playing)
                     });
 
+                    // We iterate over the playing notes to check if any new notes have been
+                    // pressed. If a new note is detected and it's not already being played by an
+                    // existing oscillator, we create a new oscillator for that note. this allows
+                    // multiple oscillators to be played simultaneously, enabling polyphony in the
+                    // synthesizer.
                     for (note, is_playing) in playing_notes.iter() {
                         if *is_playing
                             && !note_state.oscillators.iter().any(|osc| osc.note == *note)
                         {
                             if let Ok(scale) = scale.lock() {
                                 if let Some(frequency) = scale.calculate_frequency(note) {
+                                    // We adjust the frequency based on the octave shift to allow
+                                    // the synthesizer to play notes in different octaves. This
+                                    // gives the user more control over the pitch range of the
+                                    // synthesizer.
                                     let adjusted_frequency =
                                         frequency * 2.0f32.powf(*octave_shift as f32);
                                     let mut oscillator = Oscillator::builder()
@@ -221,6 +243,10 @@ where
                         }
                     }
 
+                    // We update the waveform of each oscillator if the global waveform type has
+                    // changed. This allows the user to switch between different waveforms (e.g.,
+                    // sine, square, sawtooth) in real-time, providing variety in the timbre of the
+                    // synthesized sound.
                     for oscillator in note_state.oscillators.iter_mut() {
                         if let Ok(current_waveform) = waveform_type.read() {
                             if *current_waveform != oscillator.get_waveform() {
@@ -228,6 +254,11 @@ where
                             }
                         }
 
+                        // We generate the waveform samples for each oscillator and accummulate
+                        // them in the output buffer. This is done to mix the contributions of all
+                        // active oscillators and create the final synthesized sound. The samples
+                        // are scaled by a factor of 0.1 to prevent clipping and ensure a balanced
+                        // mix.
                         let current_time = global_time.load(Ordering::Relaxed) as f32 / sample_rate;
                         let num_samples = output_buffer.data.len();
                         let generated_samples = oscillator.generate_wave(current_time, num_samples);
@@ -238,21 +269,36 @@ where
                 }
             }
 
+            // We apply the wave shaper effect to the output buffer to introduce distortion and
+            // enhance the harmonic content of the synthesized sound. This is done to make the
+            // sound more interesting and expressive.
             let mut output_buffer_copy = output_buffer.clone();
             wave_shaper_node.process(&output_buffer, &mut output_buffer_copy);
 
+            // We accummulate the generated samples in a buffer to prepare for downsampling.
+            // Downsampling is performed to reduce the computational load while maintaining a
+            // smooth audio output. By accummulating samples and then averaging them, we can
+            // effectively downsample the audio data without significant loss of quality.
             accumulated_samples.extend(output_buffer_copy.data.iter().cloned());
             debug!("Accumulated samples length: {}", accumulated_samples.len());
 
+            // We check if enough samples have been accummulated to perform downsampling. This
+            // ensures that downsampling occurs at regular intervals based on the calculated
+            // downsample factor, which is determined by the sample rate and the desired
+            // downsampled frame rate (60 fps in this case).
             if accumulated_samples.len() >= downsample_factor {
                 let mut downsampled_samples = Vec::new();
 
+                // We downsample the accumulated samples by averaging chunks of samples. This
+                // reduces the sample rate while preserving the overall shape of the waveform.
                 for chunk in accumulated_samples.chunks(downsample_factor) {
                     let sum: f32 = chunk.iter().sum();
                     let average = sum / chunk.len() as f32;
                     downsampled_samples.push(average);
                 }
 
+                // We store the downsampled audio data in a shared data structure to be used by
+                // other parts of the application, such as visualization or further processing.
                 if let Ok(mut downsampled_audio_data) = downsampled_audio_data.lock() {
                     let num_frames = downsampled_samples.len().min(256);
                     downsampled_audio_data.samples = [[0.0; 16]; 256];
@@ -263,9 +309,15 @@ where
                     }
                 }
 
+                // We clear the accummulated samples buffer after downsampling to prepare it for
+                // the next batch of samples. This prevents the buffer from growing indefinitely
+                // and consuming excessive memory.
                 accumulated_samples.clear();
             }
 
+            // We convert the floating-point samples to the output sample type and write them to
+            // the audio output buffer. This ensures that the synthesized audio is compatible with
+            // the audio backend and can be played back through the audio device.
             for (i, sample) in output_buffer_copy.data.iter_mut().enumerate() {
                 data[i] = T::from_sample(*sample);
             }
@@ -286,7 +338,7 @@ async fn run_event_loop(
     keys_config: Arc<Config>,
     waveform_type: Arc<RwLock<OscillatorWaveform>>,
     octave_shift: Arc<RwLock<i32>>,
-    tremolo_effect: Arc<Mutex<TremoloEffect>>,
+    tremolo_effect: Arc<TremoloEffect>,
     scale: Arc<Mutex<Scale>>,
     downsampled_audio_data: Arc<Mutex<DownsampledAudioData>>,
 ) -> Result<()> {
@@ -298,6 +350,8 @@ async fn run_event_loop(
     let mut audio_data = AudioData {
         samples: [[0.0; 16]; 256],
     };
+
+    let mut shift_pressed = false;
 
     let _ = event_loop.run(move |event, event_loop_window_target| match event {
         Event::WindowEvent {
@@ -337,9 +391,15 @@ async fn run_event_loop(
                 let scale = scale.clone();
 
                 debug!("Current state: {:#?}", state);
+
+                // Update the shift_pressed state based on the key event
+                if key_str == "Named(Shift)" {
+                    shift_pressed = state == ElementState::Pressed;
+                }
+
                 if state == ElementState::Pressed {
                     debug!("Key {} pressed", key_str);
-                    if let Some(event) = keycode_to_action(&key_str, &*keys_config) {
+                    if let Some(event) = keycode_to_action(&key_str, &*keys_config, shift_pressed) {
                         match event {
                             NoteEvent::ChangeOctave(direction) => {
                                 if let Ok(mut octave_shift) = octave_shift.write() {
@@ -358,7 +418,7 @@ async fn run_event_loop(
                     }
                 } else if state == ElementState::Released {
                     debug!("Key {} released", key_str);
-                    if let Some(event) = keycode_to_action(&key_str, &*keys_config) {
+                    if let Some(event) = keycode_to_action(&key_str, &*keys_config, shift_pressed) {
                         match event {
                             NoteEvent::On(note) => note_state.note_off(note),
                             NoteEvent::ChangeOctave(direction) => {
@@ -403,10 +463,7 @@ async fn run_event_loop(
     Ok(())
 }
 
-// Helper functions:
-// - keycode_to_action: Convert key events to note events based on the config
-fn keycode_to_action(key: &str, config: &Config) -> Option<NoteEvent> {
-    // Convert the key string to lowercase for case-insensitive comparison
+fn keycode_to_action(key: &str, config: &Config, shift_pressed: bool) -> Option<NoteEvent> {
     let key_str = key.to_string();
     debug!("Keycode to action called with key {}\n", key_str);
 
@@ -438,6 +495,15 @@ fn keycode_to_action(key: &str, config: &Config) -> Option<NoteEvent> {
     if let Some(note) = config.keybindings.notes.keys.get(&key_str) {
         debug!("Note: {} key: {}\n", note, key_str);
         return Some(NoteEvent::On(note.clone()));
+    }
+
+    // Check if the Shift key is pressed and the key matches the uppercase variant of a note key
+    if shift_pressed {
+        let uppercase_key_str = key_str.to_uppercase();
+        if let Some(note) = config.keybindings.notes.keys.get(&uppercase_key_str) {
+            debug!("Note (Shift + Key): {} key: {}\n", note, uppercase_key_str);
+            return Some(NoteEvent::On(note.clone()));
+        }
     }
 
     // Check if the key matches any of the bass note keys
